@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Questionnaire</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .question-container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .question {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #2980b9;
+        }
+        
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        
+        button.stop {
+            background-color: #e74c3c;
+        }
+        
+        button.stop:hover {
+            background-color: #c0392b;
+        }
+        
+        button.next {
+            background-color: #2ecc71;
+        }
+        
+        button.next:hover {
+            background-color: #27ae60;
+        }
+        
+        button.submit {
+            background-color: #9b59b6;
+            display: block;
+            margin: 30px auto;
+            padding: 12px 25px;
+            font-size: 1.1em;
+        }
+        
+        button.submit:hover {
+            background-color: #8e44ad;
+        }
+        
+        .audio-player {
+            margin-top: 15px;
+            width: 100%;
+        }
+        
+        .recording-indicator {
+            color: #e74c3c;
+            font-weight: bold;
+            margin-left: 10px;
+            display: none;
+        }
+        
+        .timer {
+            margin-left: 10px;
+            font-family: monospace;
+            font-size: 1.1em;
+        }
+        
+        .progress-container {
+            margin-top: 30px;
+            text-align: center;
+        }
+        
+        .progress-bar {
+            background-color: #ecf0f1;
+            height: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        
+        .progress {
+            background-color: #3498db;
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .completion-message {
+            display: none;
+            text-align: center;
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #dff0d8;
+            color: #3c763d;
+            border-radius: 8px;
+        }
+        
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Questionnaire</h1>
+    
+    <div id="intro">
+        <p>Welcome to our audio questionnaire! This survey allows you to respond to questions by recording your voice.</p>
+        <p>Instructions:</p>
+        <ol>
+            <li>Click "Record" to begin recording your answer.</li>
+            <li>Speak clearly into your microphone.</li>
+            <li>Click "Stop" when you're finished.</li>
+            <li>You can listen to your recording and re-record if needed.</li>
+            <li>Click "Next" to proceed to the next question.</li>
+        </ol>
+        <button id="start-survey" class="next">Start Questionnaire</button>
+    </div>
+    
+    <div id="questionnaire" class="hidden">
+        <div class="progress-container">
+            <div id="progress-text">Question <span id="current-question">1</span> of <span id="total-questions">5</span></div>
+            <div class="progress-bar">
+                <div id="progress" class="progress"></div>
+            </div>
+        </div>
+        
+        <div id="question-container" class="question-container">
+            <div id="question" class="question">Question text will appear here</div>
+            
+            <div class="controls">
+                <button id="record" class="record">Record</button>
+                <button id="stop" class="stop" disabled>Stop</button>
+                <span id="recording-indicator" class="recording-indicator">●&nbsp;Recording...</span>
+                <span id="timer" class="timer">00:00</span>
+            </div>
+            
+            <audio id="audio-player" class="audio-player" controls disabled></audio>
+            
+            <button id="next" class="next" disabled>Next Question</button>
+        </div>
+        
+        <button id="submit" class="submit hidden">Submit Responses</button>
+    </div>
+    
+    <div id="completion" class="completion-message">
+        <h2>Thank You!</h2>
+        <p>Your responses have been recorded successfully. We appreciate your participation!</p>
+    </div>
+    
+    <script>
+        // Sample questions - in a real implementation, these could be loaded from a server
+        const questions = [
+            "Please introduce yourself and tell us what you do.",
+            "What challenges are you currently facing in your work or personal life?",
+            "How do you think our product/service could help address these challenges?",
+            "What features would you like to see in our product/service?",
+            "Any additional feedback you'd like to share with us?"
+        ];
+        
+        // Global variables
+        let currentQuestionIndex = 0;
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioBlobs = [];
+        let stream;
+        let timerInterval;
+        let seconds = 0;
+        
+        // DOM elements
+        const startSurveyBtn = document.getElementById('start-survey');
+        const introSection = document.getElementById('intro');
+        const questionnaireSection = document.getElementById('questionnaire');
+        const questionElement = document.getElementById('question');
+        const recordBtn = document.getElementById('record');
+        const stopBtn = document.getElementById('stop');
+        const nextBtn = document.getElementById('next');
+        const submitBtn = document.getElementById('submit');
+        const audioPlayer = document.getElementById('audio-player');
+        const progressElement = document.getElementById('progress');
+        const currentQuestionElement = document.getElementById('current-question');
+        const totalQuestionsElement = document.getElementById('total-questions');
+        const completionSection = document.getElementById('completion');
+        const recordingIndicator = document.getElementById('recording-indicator');
+        const timerElement = document.getElementById('timer');
+        
+        // Initialize the questionnaire
+        function initQuestionnaire() {
+            totalQuestionsElement.textContent = questions.length;
+            loadQuestion(0);
+            
+            introSection.classList.add('hidden');
+            questionnaireSection.classList.remove('hidden');
+        }
+        
+        // Load a question by index
+        function loadQuestion(index) {
+            if (index >= questions.length) {
+                // Show submit button when all questions are answered
+                document.getElementById('question-container').classList.add('hidden');
+                submitBtn.classList.remove('hidden');
+                return;
+            }
+            
+            // Update UI
+            questionElement.textContent = questions[index];
+            currentQuestionElement.textContent = index + 1;
+            updateProgressBar();
+            
+            // Reset recording state
+            audioPlayer.src = '';
+            audioPlayer.disabled = true;
+            nextBtn.disabled = true;
+            
+            // Check if we have a previous recording for this question
+            if (audioBlobs[index]) {
+                audioPlayer.src = URL.createObjectURL(audioBlobs[index]);
+                audioPlayer.disabled = false;
+                nextBtn.disabled = false;
+            }
+        }
+        
+        // Start recording
+        async function startRecording() {
+            try {
+                // Reset audio chunks
+                audioChunks = [];
+                
+                // Request microphone access
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create media recorder
+                mediaRecorder = new MediaRecorder(stream);
+                
+                // Start recording
+                mediaRecorder.start();
+                
+                // Update UI
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                recordingIndicator.style.display = 'inline';
+                
+                // Start timer
+                startTimer();
+                
+                // Handle data available event
+                mediaRecorder.addEventListener('dataavailable', event => {
+                    audioChunks.push(event.data);
+                });
+                
+                // Handle stop event
+                mediaRecorder.addEventListener('stop', () => {
+                    // Create blob from chunks
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    
+                    // Save blob for current question
+                    audioBlobs[currentQuestionIndex] = audioBlob;
+                    
+                    // Create URL for audio player
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    audioPlayer.src = audioUrl;
+                    audioPlayer.disabled = false;
+                    
+                    // Enable next button
+                    nextBtn.disabled = false;
+                    
+                    // Stop all tracks
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    // Reset recording UI
+                    recordBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    recordingIndicator.style.display = 'none';
+                });
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                alert('Unable to access microphone. Please ensure you have granted the necessary permissions.');
+                recordBtn.disabled = false;
+            }
+        }
+        
+        // Stop recording
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                stopTimer();
+            }
+        }
+        
+        // Move to next question
+        function nextQuestion() {
+            currentQuestionIndex++;
+            loadQuestion(currentQuestionIndex);
+        }
+        
+        // Submit responses
+        function submitResponses() {
+            // Create form data to send audio files to server
+            const formData = new FormData();
+            
+            // Add metadata to the form data
+            formData.append('respondent_id', Date.now().toString(36) + Math.random().toString(36).substr(2));
+            formData.append('timestamp', new Date().toISOString());
+            
+            // Also send the question text for each question
+            audioBlobs.forEach((blob, index) => {
+                formData.append(`question_${index+1}`, questions[index]);
+            });
+            
+            // Add each audio recording to the form data
+            audioBlobs.forEach((blob, index) => {
+                // Add the audio file with question text as metadata
+                formData.append('audio_responses', blob, `question_${index+1}.webm`);
+            });
+            
+            // Show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Submitting...';
+            
+            // Send to server
+            fetch('/api/submit-responses', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Success:', data);
+                // Show completion message
+                questionnaireSection.classList.add('hidden');
+                completionSection.style.display = 'block';
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('There was a problem submitting your responses. Please try again.');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit Responses';
+            });
+        }
+        
+        // Update progress bar
+        function updateProgressBar() {
+            const progress = ((currentQuestionIndex) / questions.length) * 100;
+            progressElement.style.width = `${progress}%`;
+        }
+        
+        // Timer functions
+        function startTimer() {
+            seconds = 0;
+            updateTimerDisplay();
+            timerInterval = setInterval(() => {
+                seconds++;
+                updateTimerDisplay();
+            }, 1000);
+        }
+        
+        function stopTimer() {
+            clearInterval(timerInterval);
+        }
+        
+        function updateTimerDisplay() {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            timerElement.textContent = `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+        
+        // Event listeners
+        startSurveyBtn.addEventListener('click', initQuestionnaire);
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+        nextBtn.addEventListener('click', nextQuestion);
+        submitBtn.addEventListener('click', submitResponses);
+    </script>
+</body>
+</html>

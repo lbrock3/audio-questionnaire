@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Questionnaire Admin</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        .audio-player {
+            width: 100%;
+        }
+        .login-container {
+            max-width: 400px;
+            margin: 100px auto;
+        }
+        .response-item:hover {
+            background-color: #f9fafb;
+        }
+        .pagination-btn {
+            min-width: 40px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Login Screen -->
+    <div id="login-screen" class="login-container bg-white p-8 rounded-lg shadow-lg">
+        <h1 class="text-2xl font-bold text-center mb-6">Admin Login</h1>
+        <div id="login-error" class="mb-4 text-red-500 hidden"></div>
+        <form id="login-form" class="space-y-4">
+            <div>
+                <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+                <input type="text" id="username" name="username" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+            </div>
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                <input type="password" id="password" name="password" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+            </div>
+            <button type="submit" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                Sign in
+            </button>
+        </form>
+    </div>
+
+    <!-- Admin Dashboard -->
+    <div id="admin-dashboard" class="container mx-auto px-4 py-8 hidden">
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">Audio Questionnaire Responses</h1>
+            <button id="logout-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">Logout</button>
+        </header>
+
+        <!-- Responses List -->
+        <div class="bg-white shadow-md rounded-lg overflow-hidden mb-8">
+            <div class="p-4 border-b border-gray-200">
+                <h2 class="text-xl font-semibold text-gray-800">All Responses</h2>
+            </div>
+            <div id="responses-loading" class="p-6 text-center text-gray-500">
+                Loading responses...
+            </div>
+            <div id="responses-error" class="p-6 text-center text-red-500 hidden"></div>
+            <div id="no-responses" class="p-6 text-center text-gray-500 hidden">
+                No responses have been submitted yet.
+            </div>
+            <div id="responses-list" class="hidden">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Date
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Questions
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Actions
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="responses-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Response rows will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+            <div id="pagination" class="px-6 py-4 border-t border-gray-200 hidden">
+                <div class="flex items-center justify-between">
+                    <div class="text-sm text-gray-700">
+                        Showing <span id="pagination-start">1</span> to <span id="pagination-end">10</span> of <span id="pagination-total">0</span> responses
+                    </div>
+                    <div class="flex space-x-2">
+                        <button id="prev-page" class="pagination-btn px-3 py-1 border border-gray-300 rounded-md text-sm bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                            Previous
+                        </button>
+                        <div id="page-numbers" class="flex space-x-2">
+                            <!-- Page numbers will be inserted here -->
+                        </div>
+                        <button id="next-page" class="pagination-btn px-3 py-1 border border-gray-300 rounded-md text-sm bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                            Next
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Response Details Modal -->
+        <div id="response-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center hidden">
+            <div class="bg-white rounded-lg overflow-hidden shadow-xl max-w-4xl w-full max-h-screen">
+                <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <h3 class="text-lg font-medium text-gray-900">Response Details</h3>
+                    <button id="close-modal" class="text-gray-400 hover:text-gray-500">
+                        <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="px-6 py-4 max-h-screen overflow-y-auto">
+                    <div class="mb-4">
+                        <p class="text-sm text-gray-500">Submitted on <span id="modal-date">-</span></p>
+                    </div>
+                    <div id="modal-loading" class="p-6 text-center text-gray-500">
+                        Loading response details...
+                    </div>
+                    <div id="modal-error" class="p-6 text-center text-red-500 hidden"></div>
+                    <div id="modal-content" class="space-y-6 hidden">
+                        <!-- Response audio items will be inserted here -->
+                    </div>
+                    <div class="mt-6 flex justify-end">
+                        <button id="delete-response" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 mr-3">
+                            Delete Response
+                        </button>
+                        <button id="download-all" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+                            Download All
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete Confirmation Modal -->
+        <div id="delete-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center hidden">
+            <div class="bg-white rounded-lg overflow-hidden shadow-xl max-w-md w-full">
+                <div class="px-6 py-4 border-b border-gray-200">
+                    <h3 class="text-lg font-medium text-gray-900">Confirm Deletion</h3>
+                </div>
+                <div class="px-6 py-4">
+                    <p class="text-gray-700">Are you sure you want to delete this response? This action cannot be undone.</p>
+                </div>
+                <div class="px-6 py-4 bg-gray-50 flex justify-end">
+                    <button id="cancel-delete" class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 mr-3">
+                        Cancel
+                    </button>
+                    <button id="confirm-delete" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let currentUsername = localStorage.getItem('adminUsername');
+        let currentPassword = localStorage.getItem('adminPassword');
+        let currentPage = 1;
+        let totalPages = 1;
+        let currentResponseId = null;
+
+        // DOM Elements
+        const loginScreen = document.getElementById('login-screen');
+        const adminDashboard = document.getElementById('admin-dashboard');
+        const loginForm = document.getElementById('login-form');
+        const loginError = document.getElementById('login-error');
+        const logoutBtn = document.getElementById('logout-btn');
+        const responsesLoading = document.getElementById('responses-loading');
+        const responsesError = document.getElementById('responses-error');
+        const noResponses = document.getElementById('no-responses');
+        const responsesList = document.getElementById('responses-list');
+        const responsesTableBody = document.getElementById('responses-table-body');
+        const pagination = document.getElementById('pagination');
+        const paginationStart = document.getElementById('pagination-start');
+        const paginationEnd = document.getElementById('pagination-end');
+        const paginationTotal = document.getElementById('pagination-total');
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const pageNumbers = document.getElementById('page-numbers');
+        const responseModal = document.getElementById('response-modal');
+        const closeModalBtn = document.getElementById('close-modal');
+        const modalDate = document.getElementById('modal-date');
+        const modalLoading = document.getElementById('modal-loading');
+        const modalError = document.getElementById('modal-error');
+        const modalContent = document.getElementById('modal-content');
+        const deleteResponseBtn = document.getElementById('delete-response');
+        const downloadAllBtn = document.getElementById('download-all');
+        const deleteModal = document.getElementById('delete-modal');
+        const cancelDeleteBtn = document.getElementById('cancel-delete');
+        const confirmDeleteBtn = document.getElementById('confirm-delete');
+
+        // Check authentication on load
+        document.addEventListener('DOMContentLoaded', () => {
+            checkAuth();
+        });
+
+        // Login form submission
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.message || 'Login failed');
+                }
+
+                // Save credentials and show dashboard
+                currentUsername = username;
+                currentPassword = password;
+                localStorage.setItem('adminUsername', username);
+                localStorage.setItem('adminPassword', password);
+                showDashboard();
+
+            } catch (error) {
+                loginError.textContent = error.message;
+                loginError.classList.remove('hidden');
+            }
+        });
+
+        // Logout
+        logoutBtn.addEventListener('click', () => {
+            localStorage.removeItem('adminUsername');
+            localStorage.removeItem('adminPassword');
+            currentUsername = null;
+            currentPassword = null;
+            showLogin();
+        });
+
+        // Check authentication
+        function checkAuth() {
+            if (currentUsername && currentPassword) {
+                // Verify credentials by trying to fetch responses
+                fetchResponses().then(() => {
+                    showDashboard();
+                }).catch(() => {
+                    localStorage.removeItem('adminUsername');
+                    localStorage.removeItem('adminPassword');
+                    currentUsername = null;
+                    currentPassword = null;
+                    showLogin();
+                });
+            } else {
+                showLogin();
+            }
+        }
+
+        // Show login screen
+        function showLogin() {
+            adminDashboard.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
+            loginError.classList.add('hidden');
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+        }
+
+        // Show admin dashboard
+        function showDashboard() {
+            loginScreen.classList.add('hidden');
+            adminDashboard.classList.remove('hidden');
+            fetchResponses();
+        }
+
+        // Fetch responses from API
+        async function fetchResponses() {
+            try {
+                // Show loading state
+                responsesLoading.classList.remove('hidden');
+                responsesError.classList.add('hidden');
+                noResponses.classList.add('hidden');
+                responsesList.classList.add('hidden');
+                pagination.classList.add('hidden');
+
+                // Fetch responses from API using Basic Auth approach
+                const response = await fetch(`/api/admin/responses?page=${currentPage}&limit=10`, {
+                    headers: {
+                        'username': currentUsername,
+                        'password': currentPassword
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch responses');
+                }
+
+                const data = await response.json();
+
+                // Hide loading state
+                responsesLoading.classList.add('hidden');
+
+                // Check if there are responses
+                if (data.responses.length === 0) {
+                    noResponses.classList.remove('hidden');
+                    return;
+                }
+
+                // Display responses
+                displayResponses(data.responses);
+
+                // Update pagination
+                updatePagination(data.pagination);
+
+            } catch (error) {
+                responsesLoading.classList.add('hidden');
+                responsesError.textContent = error.message;
+                responsesError.classList.remove('hidden');
+            }
+        }
+
+        // Display responses in table
+        function displayResponses(responses) {
+            responsesTableBody.innerHTML = '';
+
+            responses.forEach(response => {
+                const tr = document.createElement('tr');
+                tr.className = 'response-item hover:bg-gray-50 cursor-pointer';
+                tr.dataset.id = response._id;
+
+                const date = new Date(response.submittedAt);
+                const formattedDate = date.toLocaleString();
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ${formattedDate}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ${response.responses.length} questions answered
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button class="view-btn text-indigo-600 hover:text-indigo-900">View</button>
+                    </td>
+                `;
+
+                responsesTableBody.appendChild(tr);
+
+                // Add click event to row
+                tr.addEventListener('click', () => {
+                    openResponseModal(response._id, formattedDate);
+                });
+
+                // Add click event to view button
+                tr.querySelector('.view-btn').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openResponseModal(response._id, formattedDate);
+                });
+            });
+
+            responsesList.classList.remove('hidden');
+        }
+
+        // Update pagination controls
+        function updatePagination(paginationData) {
+            totalPages = paginationData.pages;
+
+            // Update pagination text
+            paginationStart.textContent = ((currentPage - 1) * 10) + 1;
+            paginationEnd.textContent = Math.min(currentPage * 10, paginationData.total);
+            paginationTotal.textContent = paginationData.total;
+
+            // Enable/disable previous/next buttons
+            prevPageBtn.disabled = currentPage === 1;
+            nextPageBtn.disabled = currentPage === totalPages;
+
+            // Generate page numbers
+            pageNumbers.innerHTML = '';
+            const pageCount = Math.min(5, totalPages);
+            let startPage = Math.max(1, currentPage - 2);
+            let endPage = Math.min(startPage + pageCount - 1, totalPages);
+
+            if (endPage - startPage < pageCount - 1) {
+                startPage = Math.max(1, endPage - pageCount + 1);
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                const pageBtn = document.createElement('button');
+                pageBtn.className = `pagination-btn px-3 py-1 border border-gray-300 rounded-md text-sm ${i === currentPage ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`;
+                pageBtn.textContent = i;
+                pageBtn.addEventListener('click', () => {
+                    currentPage = i;
+                    fetchResponses();
+                });
+                pageNumbers.appendChild(pageBtn);
+            }
+
+            // Show pagination controls
+            pagination.classList.remove('hidden');
+
+            // Add click events for previous/next buttons
+            prevPageBtn.onclick = () => {
+                if (currentPage > 1) {
+                    currentPage--;
+                    fetchResponses();
+                }
+            };
+
+            nextPageBtn.onclick = () => {
+                if (currentPage < totalPages) {
+                    currentPage++;
+                    fetchResponses();
+                }
+            };
+        }
+
+        // Open response modal
+        function openResponseModal(responseId, formattedDate) {
+            currentResponseId = responseId;
+            modalDate.textContent = formattedDate;
+
+            // Show modal
+            responseModal.classList.remove('hidden');
+            modalLoading.classList.remove('hidden');
+            modalError.classList.add('hidden');
+            modalContent.classList.add('hidden');
+
+            // Fetch response details
+            fetchResponseDetails(responseId);
+        }
+
+        // Fetch response details
+        async function fetchResponseDetails(responseId) {
+            try {
+                const response = await fetch(`/api/admin/responses/${responseId}`, {
+                    headers: {
+                        'username': currentUsername,
+                        'password': currentPassword
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch response details');
+                }
+
+                const data = await response.json();
+                displayResponseDetails(data.response);
+
+            } catch (error) {
+                modalLoading.classList.add('hidden');
+                modalError.textContent = error.message;
+                modalError.classList.remove('hidden');
+            }
+        }
+
+        // Display response details in modal
+        function displayResponseDetails(responseData) {
+            modalContent.innerHTML = '';
+
+            // Sort responses by question index
+            const sortedResponses = [...responseData.responses].sort((a, b) => a.questionIndex - b.questionIndex);
+
+            // Create audio elements for each response
+            sortedResponses.forEach((response, index) => {
+                const responseItem = document.createElement('div');
+                responseItem.className = 'p-4 bg-gray-50 rounded-lg';
+
+                responseItem.innerHTML = `
+                    <div class="mb-3">
+                        <span class="text-sm font-medium text-gray-500">Question ${index + 1}:</span>
+                        <p class="text-gray-900">${response.questionText || 'No question text available'}</p>
+                    </div>
+                    <div class="mb-2">
+                        <audio class="audio-player" controls src="/api/admin/audio/${response.audioFilename}"></audio>
+                    </div>
+                    <div class="flex justify-end">
+                        <a href="/api/admin/download/${response.audioFilename}" download class="text-sm text-indigo-600 hover:text-indigo-900">
+                            Download Audio
+                        </a>
+                    </div>
+                `;
+
+                modalContent.appendChild(responseItem);
+            });
+
+            // Hide loading state and show content
+            modalLoading.classList.add('hidden');
+            modalContent.classList.remove('hidden');
+        }
+
+        // Close modal
+        closeModalBtn.addEventListener('click', () => {
+            responseModal.classList.add('hidden');
+            currentResponseId = null;
+        });
+
+        // Download all audio files
+        downloadAllBtn.addEventListener('click', () => {
+            // This is a simplified approach - in a real implementation, you might want to
+            // create a server endpoint that zips all files together
+            const audioElements = modalContent.querySelectorAll('a[download]');
+
+            // Trigger downloads for all audio files
+            audioElements.forEach(link => {
+                const clickEvent = new MouseEvent('click');
+                link.dispatchEvent(clickEvent);
+            });
+        });
+
+        // Delete response
+        deleteResponseBtn.addEventListener('click', () => {
+            if (currentResponseId) {
+                deleteModal.classList.remove('hidden');
+            }
+        });
+
+        // Cancel delete
+        cancelDeleteBtn.addEventListener('click', () => {
+            deleteModal.classList.add('hidden');
+        });
+
+        // Confirm delete
+        confirmDeleteBtn.addEventListener('click', async () => {
+            if (!currentResponseId) {
+                deleteModal.classList.add('hidden');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/responses/${currentResponseId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'username': currentUsername,
+                        'password': currentPassword
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to delete response');
+                }
+
+                // Close modals and refresh responses
+                deleteModal.classList.add('hidden');
+                responseModal.classList.add('hidden');
+                currentResponseId = null;
+                fetchResponses();
+
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        });
+
+        // Handle clicking outside modals to close them
+        window.addEventListener('click', (e) => {
+            if (e.target === responseModal) {
+                responseModal.classList.add('hidden');
+                currentResponseId = null;
+            }
+
+            if (e.target === deleteModal) {
+                deleteModal.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
