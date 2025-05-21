@@ -19,8 +19,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// GridFS setup
-let gridFSBucket;
+// GridFS setup - initialize as null
+let gridFSBucket = null;
+let isDbConnected = false;
 
 // Configure file storage (using memory storage for Render)
 const storage = multer.memoryStorage();
@@ -38,6 +39,81 @@ const upload = multer({
     }
 });
 
+// GridFS helper functions
+const uploadToGridFS = (buffer, filename, contentType) => {
+    return new Promise((resolve, reject) => {
+        // Check if gridFSBucket is initialized
+        if (!gridFSBucket) {
+            return reject(new Error('Database connection not ready. Please try again.'));
+        }
+
+        const bufferStream = new stream.PassThrough();
+        bufferStream.end(buffer);
+
+        const uploadStream = gridFSBucket.openUploadStream(filename, {
+            contentType: contentType
+        });
+
+        bufferStream.pipe(uploadStream)
+        .on('error', (error) => reject(error))
+        .on('finish', () => resolve(uploadStream.id));
+    });
+};
+
+const deleteFromGridFS = async (filename) => {
+    try {
+        // Check if gridFSBucket is initialized
+        if (!gridFSBucket) {
+            throw new Error('Database connection not ready');
+        }
+
+        const files = await mongoose.connection.db
+        .collection('audioUploads.files')
+        .find({ filename: filename })
+        .toArray();
+
+        if (files.length > 0) {
+            await gridFSBucket.delete(files[0]._id);
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.error('Error deleting file from GridFS:', error);
+        return false;
+    }
+};
+
+// Connection ready middleware - ensures DB is connected before handling requests
+const ensureDbConnected = (req, res, next) => {
+    if (isDbConnected) {
+        return next();
+    }
+
+    // If not connected, wait for connection with a timeout
+    let retryCount = 0;
+    const maxRetries = 20;
+    const retryInterval = 500; // 0.5 seconds
+
+    const checkConnection = () => {
+        if (isDbConnected) {
+            next();
+            return;
+        }
+
+        retryCount++;
+        if (retryCount >= maxRetries) {
+            return res.status(503).json({
+                success: false,
+                message: 'Database connection not available. Please try again later.'
+            });
+        }
+
+        setTimeout(checkConnection, retryInterval);
+    };
+
+    checkConnection();
+};
+
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/audio-questionnaire')
 .then(() => {
@@ -46,9 +122,28 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/audio-que
     gridFSBucket = new GridFSBucket(mongoose.connection.db, {
         bucketName: 'audioUploads'
     });
+    isDbConnected = true;
     console.log('GridFS bucket initialized');
 })
 .catch(err => console.error('MongoDB connection error:', err));
+
+// Handle MongoDB disconnection
+mongoose.connection.on('disconnected', () => {
+    console.log('Disconnected from MongoDB');
+    isDbConnected = false;
+    gridFSBucket = null;
+});
+
+// Handle MongoDB reconnection
+mongoose.connection.on('reconnected', () => {
+    console.log('Reconnected to MongoDB');
+    // Re-initialize GridFS
+    gridFSBucket = new GridFSBucket(mongoose.connection.db, {
+        bucketName: 'audioUploads'
+    });
+    isDbConnected = true;
+    console.log('GridFS bucket re-initialized');
+});
 
 // Create models
 const responseSchema = new mongoose.Schema({
@@ -114,40 +209,6 @@ const createAdminUser = async () => {
     }
 };
 
-// GridFS helper functions
-const uploadToGridFS = (buffer, filename, contentType) => {
-    return new Promise((resolve, reject) => {
-        const bufferStream = new stream.PassThrough();
-        bufferStream.end(buffer);
-
-        const uploadStream = gridFSBucket.openUploadStream(filename, {
-            contentType: contentType
-        });
-
-        bufferStream.pipe(uploadStream)
-        .on('error', (error) => reject(error))
-        .on('finish', () => resolve(uploadStream.id));
-    });
-};
-
-const deleteFromGridFS = async (filename) => {
-    try {
-        const files = await mongoose.connection.db
-        .collection('audioUploads.files')
-        .find({ filename: filename })
-        .toArray();
-
-        if (files.length > 0) {
-            await gridFSBucket.delete(files[0]._id);
-            return true;
-        }
-        return false;
-    } catch (error) {
-        console.error('Error deleting file from GridFS:', error);
-        return false;
-    }
-};
-
 // Routes
 
 // Serve index page
@@ -155,9 +216,14 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Submit questionnaire responses
-app.post('/api/submit-responses', upload.array('audio_responses'), async (req, res) => {
+// Submit questionnaire responses - use the ensureDbConnected middleware
+app.post('/api/submit-responses', ensureDbConnected, upload.array('audio_responses'), async (req, res) => {
     try {
+        // Check if gridFSBucket is available
+        if (!gridFSBucket) {
+            throw new Error('Database connection not ready. Please try again.');
+        }
+
         // Process form data
         const files = req.files;
         const questions = req.body;
@@ -202,13 +268,13 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
         console.error('Error handling submission:', error);
         res.status(500).json({
             success: false,
-            message: 'An error occurred while processing your submission'
+            message: 'An error occurred while processing your submission: ' + error.message
         });
     }
 });
 
 // Authentication routes - simplified for non-sensitive data
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', ensureDbConnected, async (req, res) => {
     try {
         const { username, password } = req.body;
 
@@ -233,7 +299,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Admin routes
-app.get('/api/admin/responses', authenticateUser, async (req, res) => {
+app.get('/api/admin/responses', ensureDbConnected, authenticateUser, async (req, res) => {
     // Verify admin privileges
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
 
@@ -265,7 +331,7 @@ app.get('/api/admin/responses', authenticateUser, async (req, res) => {
 });
 
 // Get specific response
-app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
+app.get('/api/admin/responses/:id', ensureDbConnected, authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
 
     try {
@@ -280,10 +346,15 @@ app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
 });
 
 // Stream audio file from GridFS
-app.get('/api/admin/audio/:filename', (req, res) => {
+app.get('/api/admin/audio/:filename', ensureDbConnected, (req, res) => {
     const filename = req.params.filename;
 
     try {
+        // Check if gridFSBucket is available
+        if (!gridFSBucket) {
+            throw new Error('Database connection not ready');
+        }
+
         // Create download stream from GridFS
         const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
 
@@ -307,10 +378,15 @@ app.get('/api/admin/audio/:filename', (req, res) => {
 });
 
 // Download audio file from GridFS
-app.get('/api/admin/download/:filename', (req, res) => {
+app.get('/api/admin/download/:filename', ensureDbConnected, (req, res) => {
     const filename = req.params.filename;
 
     try {
+        // Check if gridFSBucket is available
+        if (!gridFSBucket) {
+            throw new Error('Database connection not ready');
+        }
+
         // Create download stream from GridFS
         const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
 
@@ -335,7 +411,7 @@ app.get('/api/admin/download/:filename', (req, res) => {
 });
 
 // Delete response
-app.delete('/api/admin/responses/:id', authenticateUser, async (req, res) => {
+app.delete('/api/admin/responses/:id', ensureDbConnected, authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
 
     try {
@@ -369,5 +445,8 @@ app.get('/admin', (req, res) => {
 // Start server
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port}, accessible at http://localhost:${port}`);
-    createAdminUser();
+    // Create admin user once DB is connected
+    mongoose.connection.once('connected', () => {
+        createAdminUser();
+    });
 });
