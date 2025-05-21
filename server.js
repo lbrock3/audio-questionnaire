@@ -4,9 +4,6 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
-const { MongoClient, GridFSBucket } = require('mongodb');
-const stream = require('stream');
 require('dotenv').config();
 
 // Initialize app
@@ -19,7 +16,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Configure file storage (using memory storage for Render)
+// Configure file storage (using memory storage)
 const storage = multer.memoryStorage();
 const upload = multer({
     storage: storage,
@@ -35,47 +32,14 @@ const upload = multer({
     }
 });
 
-// Direct MongoDB connection for GridFS
-let mongoClient;
-let gridFSBucket;
-
-// Connect to MongoDB directly for GridFS operations
-async function connectToMongoDB() {
-    try {
-        // Close existing connection if any
-        if (mongoClient) {
-            await mongoClient.close();
-        }
-
-        // Create a new MongoDB client
-        mongoClient = new MongoClient(process.env.MONGODB_URI || 'mongodb://localhost:27017/audio-questionnaire');
-
-        // Connect to MongoDB
-        await mongoClient.connect();
-        console.log('Direct MongoDB connection established for GridFS');
-
-        // Get the database
-        const db = mongoClient.db();
-
-        // Create GridFS bucket
-        gridFSBucket = new GridFSBucket(db, { bucketName: 'audioUploads' });
-        console.log('GridFS bucket initialized directly');
-
-        return true;
-    } catch (error) {
-        console.error('Error connecting to MongoDB directly:', error);
-        return false;
-    }
-}
-
-// Connect to MongoDB using Mongoose (for models)
+// MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/audio-questionnaire')
 .then(() => {
-    console.log('Connected to MongoDB using Mongoose');
+    console.log('Connected to MongoDB');
 })
-.catch(err => console.error('MongoDB connection error with Mongoose:', err));
+.catch(err => console.error('MongoDB connection error:', err));
 
-// Create models
+// Create models with audio data embedded
 const responseSchema = new mongoose.Schema({
     submittedAt: { type: Date, default: Date.now },
     ipAddress: String,
@@ -83,13 +47,15 @@ const responseSchema = new mongoose.Schema({
     responses: [{
         questionIndex: Number,
         questionText: String,
+        audioData: Buffer,
+        audioContentType: String,
         audioFilename: String
     }]
 });
 
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
-    password: { type: String, required: true }, // Plain text password - suitable for non-sensitive data
+    password: { type: String, required: true },
     isAdmin: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
 });
@@ -97,7 +63,7 @@ const userSchema = new mongoose.Schema({
 const Response = mongoose.model('Response', responseSchema);
 const User = mongoose.model('User', userSchema);
 
-// Authentication middleware - simplified for non-sensitive data
+// Authentication middleware
 const authenticateUser = (req, res, next) => {
     const username = req.headers['username'];
     const password = req.headers['password'];
@@ -106,7 +72,6 @@ const authenticateUser = (req, res, next) => {
         return res.status(401).json({ message: 'Authentication required' });
     }
 
-    // Simple username/password check
     User.findOne({ username: username })
     .then(user => {
         if (!user || user.password !== password) {
@@ -126,7 +91,6 @@ const createAdminUser = async () => {
     try {
         const adminExists = await User.findOne({ isAdmin: true });
         if (!adminExists) {
-            // Store password as plain text - acceptable for non-sensitive data
             await User.create({
                 username: process.env.ADMIN_USERNAME || 'admin',
                 password: process.env.ADMIN_INITIAL_PASSWORD || 'admin123',
@@ -136,93 +100,6 @@ const createAdminUser = async () => {
         }
     } catch (error) {
         console.error('Error creating admin user:', error);
-    }
-};
-
-// GridFS helper functions
-const uploadToGridFS = async (buffer, filename, contentType) => {
-    // Ensure connection is established
-    if (!gridFSBucket) {
-        await connectToMongoDB();
-        if (!gridFSBucket) {
-            throw new Error('Failed to initialize GridFS');
-        }
-    }
-
-    return new Promise((resolve, reject) => {
-        const bufferStream = new stream.PassThrough();
-        bufferStream.end(buffer);
-
-        const uploadStream = gridFSBucket.openUploadStream(filename, {
-            contentType: contentType
-        });
-
-        bufferStream.pipe(uploadStream)
-        .on('error', (error) => reject(error))
-        .on('finish', () => resolve(uploadStream.id));
-    });
-};
-
-const getFileFromGridFS = async (filename) => {
-    // Ensure connection is established
-    if (!gridFSBucket) {
-        await connectToMongoDB();
-        if (!gridFSBucket) {
-            throw new Error('Failed to initialize GridFS');
-        }
-    }
-
-    try {
-        const files = await mongoClient.db().collection('audioUploads.files')
-        .find({ filename: filename })
-        .toArray();
-
-        if (files.length === 0) {
-            throw new Error('File not found');
-        }
-
-        return files[0];
-    } catch (error) {
-        console.error('Error getting file from GridFS:', error);
-        throw error;
-    }
-};
-
-const deleteFromGridFS = async (filename) => {
-    // Ensure connection is established
-    if (!gridFSBucket) {
-        await connectToMongoDB();
-        if (!gridFSBucket) {
-            throw new Error('Failed to initialize GridFS');
-        }
-    }
-
-    try {
-        const files = await mongoClient.db().collection('audioUploads.files')
-        .find({ filename: filename })
-        .toArray();
-
-        if (files.length > 0) {
-            await gridFSBucket.delete(files[0]._id);
-            return true;
-        }
-        return false;
-    } catch (error) {
-        console.error('Error deleting file from GridFS:', error);
-        return false;
-    }
-};
-
-// Connection check middleware
-const ensureGridFSConnection = async (req, res, next) => {
-    try {
-        if (!gridFSBucket) {
-            await connectToMongoDB();
-        }
-        next();
-    } catch (error) {
-        console.error('GridFS connection error:', error);
-        res.status(500).json({ message: 'Database connection error' });
     }
 };
 
@@ -236,17 +113,13 @@ app.get('/', (req, res) => {
 // Submit questionnaire responses
 app.post('/api/submit-responses', upload.array('audio_responses'), async (req, res) => {
     try {
-        // Ensure GridFS connection
-        if (!gridFSBucket) {
-            await connectToMongoDB();
-            if (!gridFSBucket) {
-                throw new Error('Could not establish GridFS connection');
-            }
-        }
+        console.log('Submission received. Processing...');
 
         // Process form data
         const files = req.files;
         const questions = req.body;
+
+        console.log(`Received ${files.length} files and ${Object.keys(questions).length} questions`);
 
         // Create response object
         const response = new Response({
@@ -255,7 +128,7 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
             responses: []
         });
 
-        // Process files and upload to GridFS
+        // Process files
         for (const file of files) {
             const questionIndexMatch = file.originalname.match(/question_(\d+)/);
             if (questionIndexMatch) {
@@ -264,20 +137,22 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
                 // Create a unique filename
                 const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
 
-                // Upload to GridFS
-                await uploadToGridFS(file.buffer, filename, file.mimetype);
-
-                // Save file info to response
+                // Store file directly in MongoDB
                 response.responses.push({
                     questionIndex,
                     questionText: questions[`question_${questionIndex+1}`],
+                    audioData: file.buffer,
+                    audioContentType: file.mimetype,
                     audioFilename: filename
                 });
+
+                console.log(`Processed file for question ${questionIndex+1}`);
             }
         }
 
         // Save response to database
         await response.save();
+        console.log('Response saved successfully');
 
         res.status(200).json({
             success: true,
@@ -293,7 +168,7 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
     }
 });
 
-// Authentication routes - simplified for non-sensitive data
+// Authentication routes
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -306,7 +181,7 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid username or password' });
         }
 
-        // Return user info directly - no token needed
+        // Return user info directly
         res.status(200).json({
             username: user.username,
             isAdmin: user.isAdmin
@@ -329,7 +204,8 @@ app.get('/api/admin/responses', authenticateUser, async (req, res) => {
         const limit = parseInt(req.query.limit) || 10;
         const skip = (page - 1) * limit;
 
-        const responses = await Response.find()
+        // Get responses without audio data for faster loading
+        const responses = await Response.find({}, { 'responses.audioData': 0 })
         .sort({ submittedAt: -1 })
         .skip(skip)
         .limit(limit);
@@ -355,7 +231,8 @@ app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
 
     try {
-        const response = await Response.findById(req.params.id);
+        // Get response without audio data
+        const response = await Response.findById(req.params.id, { 'responses.audioData': 0 });
         if (!response) return res.status(404).json({ message: 'Response not found' });
 
         res.status(200).json({ response });
@@ -365,64 +242,58 @@ app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     }
 });
 
-// Stream audio file from GridFS
-app.get('/api/admin/audio/:filename', ensureGridFSConnection, async (req, res) => {
+// Stream audio file directly from MongoDB
+app.get('/api/admin/audio/:responseId/:index', async (req, res) => {
     try {
-        const filename = req.params.filename;
+        const responseId = req.params.responseId;
+        const index = parseInt(req.params.index);
 
-        // Get file info
-        await getFileFromGridFS(filename);
+        // Find the response and select only the specified audio data
+        const response = await Response.findById(responseId);
 
-        // Create download stream
-        const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
+        if (!response || !response.responses[index]) {
+            return res.status(404).json({ message: 'Audio file not found' });
+        }
 
-        // Set content type
-        res.set('Content-Type', 'audio/webm');
+        const audioResponse = response.responses[index];
 
-        // Handle errors
-        downloadStream.on('error', (err) => {
-            console.error('Error streaming file:', err);
-            if (!res.headersSent) {
-                res.status(404).json({ message: 'Audio file not found' });
-            }
-        });
+        // Set appropriate headers
+        res.set('Content-Type', audioResponse.audioContentType);
 
-        // Pipe file to response
-        downloadStream.pipe(res);
+        // Send the audio data
+        res.send(audioResponse.audioData);
+
     } catch (error) {
-        console.error('Error accessing audio file:', error);
-        res.status(500).json({ message: 'Internal server error' });
+        console.error('Error serving audio file:', error);
+        res.status(500).json({ message: 'Error serving audio file' });
     }
 });
 
-// Download audio file from GridFS
-app.get('/api/admin/download/:filename', ensureGridFSConnection, async (req, res) => {
+// Download audio file
+app.get('/api/admin/download/:responseId/:index', async (req, res) => {
     try {
-        const filename = req.params.filename;
+        const responseId = req.params.responseId;
+        const index = parseInt(req.params.index);
 
-        // Get file info
-        await getFileFromGridFS(filename);
+        // Find the response and select only the specified audio data
+        const response = await Response.findById(responseId);
 
-        // Create download stream
-        const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
+        if (!response || !response.responses[index]) {
+            return res.status(404).json({ message: 'Audio file not found' });
+        }
 
-        // Set headers for download
-        res.set('Content-Type', 'audio/webm');
-        res.set('Content-Disposition', `attachment; filename="${filename}"`);
+        const audioResponse = response.responses[index];
 
-        // Handle errors
-        downloadStream.on('error', (err) => {
-            console.error('Error downloading file:', err);
-            if (!res.headersSent) {
-                res.status(404).json({ message: 'Audio file not found' });
-            }
-        });
+        // Set appropriate headers for download
+        res.set('Content-Type', audioResponse.audioContentType);
+        res.set('Content-Disposition', `attachment; filename="${audioResponse.audioFilename}"`);
 
-        // Pipe file to response
-        downloadStream.pipe(res);
+        // Send the audio data
+        res.send(audioResponse.audioData);
+
     } catch (error) {
         console.error('Error downloading file:', error);
-        res.status(500).json({ message: 'Internal server error' });
+        res.status(500).json({ message: 'Error downloading file' });
     }
 });
 
@@ -431,25 +302,12 @@ app.delete('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
 
     try {
-        const response = await Response.findById(req.params.id);
-        if (!response) return res.status(404).json({ message: 'Response not found' });
+        // Simply delete the document from MongoDB
+        const result = await Response.findByIdAndDelete(req.params.id);
 
-        // Ensure GridFS connection
-        if (!gridFSBucket) {
-            await connectToMongoDB();
+        if (!result) {
+            return res.status(404).json({ message: 'Response not found' });
         }
-
-        // Delete associated audio files from GridFS
-        for (const item of response.responses) {
-            try {
-                await deleteFromGridFS(item.audioFilename);
-            } catch (err) {
-                console.error(`Error deleting file ${item.audioFilename}:`, err);
-            }
-        }
-
-        // Delete response from database
-        await Response.findByIdAndDelete(req.params.id);
 
         res.status(200).json({ message: 'Response deleted successfully' });
     } catch (error) {
@@ -462,11 +320,6 @@ app.delete('/api/admin/responses/:id', authenticateUser, async (req, res) => {
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
-
-// Establish initial GridFS connection
-(async () => {
-    await connectToMongoDB();
-})();
 
 // Start server
 app.listen(port, '0.0.0.0', () => {
