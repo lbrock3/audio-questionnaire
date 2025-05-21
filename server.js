@@ -5,6 +5,8 @@ const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { GridFSBucket } = require('mongodb');
+const stream = require('stream');
 require('dotenv').config();
 
 // Initialize app
@@ -17,24 +19,12 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+// GridFS setup
+let gridFSBucket;
 
-// Configure file storage
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-const upload = multer({ 
+// Configure file storage (using memory storage for Render)
+const storage = multer.memoryStorage();
+const upload = multer({
     storage: storage,
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('audio/')) {
@@ -50,8 +40,15 @@ const upload = multer({
 
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/audio-questionnaire')
-    .then(() => console.log('Connected to MongoDB'))
-    .catch(err => console.error('MongoDB connection error:', err));
+.then(() => {
+    console.log('Connected to MongoDB');
+    // Initialize GridFS
+    gridFSBucket = new GridFSBucket(mongoose.connection.db, {
+        bucketName: 'audioUploads'
+    });
+    console.log('GridFS bucket initialized');
+})
+.catch(err => console.error('MongoDB connection error:', err));
 
 // Create models
 const responseSchema = new mongoose.Schema({
@@ -79,24 +76,24 @@ const User = mongoose.model('User', userSchema);
 const authenticateUser = (req, res, next) => {
     const username = req.headers['username'];
     const password = req.headers['password'];
-    
+
     if (!username || !password) {
         return res.status(401).json({ message: 'Authentication required' });
     }
-    
+
     // Simple username/password check
     User.findOne({ username: username })
-        .then(user => {
-            if (!user || user.password !== password) {
-                return res.status(401).json({ message: 'Invalid credentials' });
-            }
-            req.user = user;
-            next();
-        })
-        .catch(err => {
-            console.error('Auth error:', err);
-            res.status(500).json({ message: 'Authentication error' });
-        });
+    .then(user => {
+        if (!user || user.password !== password) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+        req.user = user;
+        next();
+    })
+    .catch(err => {
+        console.error('Auth error:', err);
+        res.status(500).json({ message: 'Authentication error' });
+    });
 };
 
 // Create initial admin user if none exists
@@ -117,6 +114,40 @@ const createAdminUser = async () => {
     }
 };
 
+// GridFS helper functions
+const uploadToGridFS = (buffer, filename, contentType) => {
+    return new Promise((resolve, reject) => {
+        const bufferStream = new stream.PassThrough();
+        bufferStream.end(buffer);
+
+        const uploadStream = gridFSBucket.openUploadStream(filename, {
+            contentType: contentType
+        });
+
+        bufferStream.pipe(uploadStream)
+        .on('error', (error) => reject(error))
+        .on('finish', () => resolve(uploadStream.id));
+    });
+};
+
+const deleteFromGridFS = async (filename) => {
+    try {
+        const files = await mongoose.connection.db
+        .collection('audioUploads.files')
+        .find({ filename: filename })
+        .toArray();
+
+        if (files.length > 0) {
+            await gridFSBucket.delete(files[0]._id);
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.error('Error deleting file from GridFS:', error);
+        return false;
+    }
+};
+
 // Routes
 
 // Serve index page
@@ -130,40 +161,48 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
         // Process form data
         const files = req.files;
         const questions = req.body;
-        
+
         // Create response object
         const response = new Response({
             ipAddress: req.ip,
             userAgent: req.headers['user-agent'],
             responses: []
         });
-        
-        // Map files to questions
-        files.forEach(file => {
+
+        // Process files and upload to GridFS
+        for (const file of files) {
             const questionIndexMatch = file.originalname.match(/question_(\d+)/);
             if (questionIndexMatch) {
                 const questionIndex = parseInt(questionIndexMatch[1]) - 1;
+
+                // Create a unique filename
+                const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+
+                // Upload to GridFS
+                await uploadToGridFS(file.buffer, filename, file.mimetype);
+
+                // Save file info to response
                 response.responses.push({
                     questionIndex,
                     questionText: questions[`question_${questionIndex+1}`],
-                    audioFilename: file.filename
+                    audioFilename: filename
                 });
             }
-        });
-        
-        // Save to database
+        }
+
+        // Save response to database
         await response.save();
-        
-        res.status(200).json({ 
-            success: true, 
+
+        res.status(200).json({
+            success: true,
             message: 'Responses submitted successfully',
             responseId: response._id
         });
     } catch (error) {
         console.error('Error handling submission:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'An error occurred while processing your submission' 
+        res.status(500).json({
+            success: false,
+            message: 'An error occurred while processing your submission'
         });
     }
 });
@@ -172,21 +211,21 @@ app.post('/api/submit-responses', upload.array('audio_responses'), async (req, r
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        
+
         // Find user with direct password comparison
         const user = await User.findOne({ username });
         if (!user) return res.status(400).json({ message: 'Invalid username or password' });
-        
+
         if (user.password !== password) {
             return res.status(400).json({ message: 'Invalid username or password' });
         }
-        
+
         // Return user info directly - no token needed
-        res.status(200).json({ 
-            username: user.username, 
-            isAdmin: user.isAdmin 
+        res.status(200).json({
+            username: user.username,
+            isAdmin: user.isAdmin
         });
-        
+
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ message: 'An error occurred during login' });
@@ -197,22 +236,22 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/admin/responses', authenticateUser, async (req, res) => {
     // Verify admin privileges
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
-    
+
     try {
         // Get all responses with pagination
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const skip = (page - 1) * limit;
-        
+
         const responses = await Response.find()
-            .sort({ submittedAt: -1 })
-            .skip(skip)
-            .limit(limit);
-            
+        .sort({ submittedAt: -1 })
+        .skip(skip)
+        .limit(limit);
+
         const total = await Response.countDocuments();
-        
-        res.status(200).json({ 
-            responses, 
+
+        res.status(200).json({
+            responses,
             pagination: {
                 total,
                 page,
@@ -228,11 +267,11 @@ app.get('/api/admin/responses', authenticateUser, async (req, res) => {
 // Get specific response
 app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
-    
+
     try {
         const response = await Response.findById(req.params.id);
         if (!response) return res.status(404).json({ message: 'Response not found' });
-        
+
         res.status(200).json({ response });
     } catch (error) {
         console.error('Error fetching response:', error);
@@ -240,51 +279,81 @@ app.get('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     }
 });
 
-// Stream audio file - simplified, no authentication for non-sensitive data
+// Stream audio file from GridFS
 app.get('/api/admin/audio/:filename', (req, res) => {
     const filename = req.params.filename;
-    const filePath = path.join(__dirname, 'uploads', filename);
-    
-    // Check if file exists
-    if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ message: 'Audio file not found' });
+
+    try {
+        // Create download stream from GridFS
+        const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
+
+        // Set content type
+        res.set('Content-Type', 'audio/webm');
+
+        // Handle errors
+        downloadStream.on('error', (err) => {
+            console.error('Error streaming file:', err);
+            if (!res.headersSent) {
+                res.status(404).json({ message: 'Audio file not found' });
+            }
+        });
+
+        // Pipe file to response
+        downloadStream.pipe(res);
+    } catch (error) {
+        console.error('Error accessing audio file:', error);
+        res.status(500).json({ message: 'Internal server error' });
     }
-    
-    // Stream the file
-    res.sendFile(filePath);
 });
 
-// Download audio file - simplified, no authentication for non-sensitive data
+// Download audio file from GridFS
 app.get('/api/admin/download/:filename', (req, res) => {
     const filename = req.params.filename;
-    const filePath = path.join(__dirname, 'uploads', filename);
-    
-    if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ message: 'Audio file not found' });
+
+    try {
+        // Create download stream from GridFS
+        const downloadStream = gridFSBucket.openDownloadStreamByName(filename);
+
+        // Set headers for download
+        res.set('Content-Type', 'audio/webm');
+        res.set('Content-Disposition', `attachment; filename="${filename}"`);
+
+        // Handle errors
+        downloadStream.on('error', (err) => {
+            console.error('Error downloading file:', err);
+            if (!res.headersSent) {
+                res.status(404).json({ message: 'Audio file not found' });
+            }
+        });
+
+        // Pipe file to response
+        downloadStream.pipe(res);
+    } catch (error) {
+        console.error('Error downloading file:', error);
+        res.status(500).json({ message: 'Internal server error' });
     }
-    
-    res.download(filePath);
 });
 
 // Delete response
 app.delete('/api/admin/responses/:id', authenticateUser, async (req, res) => {
     if (!req.user.isAdmin) return res.status(403).json({ message: 'Admin privileges required' });
-    
+
     try {
         const response = await Response.findById(req.params.id);
         if (!response) return res.status(404).json({ message: 'Response not found' });
-        
-        // Delete associated audio files
-        response.responses.forEach(item => {
-            const filePath = path.join(__dirname, 'uploads', item.audioFilename);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
+
+        // Delete associated audio files from GridFS
+        for (const item of response.responses) {
+            try {
+                await deleteFromGridFS(item.audioFilename);
+            } catch (err) {
+                console.error(`Error deleting file ${item.audioFilename}:`, err);
             }
-        });
-        
+        }
+
         // Delete response from database
         await Response.findByIdAndDelete(req.params.id);
-        
+
         res.status(200).json({ message: 'Response deleted successfully' });
     } catch (error) {
         console.error('Error deleting response:', error);
